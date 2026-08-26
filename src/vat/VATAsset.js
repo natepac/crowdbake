@@ -213,18 +213,58 @@ export class VATAsset {
     if (this.boneTex) this.boneTex.dispose();
   }
 
-  static async load(url, { fetchImpl = fetch } = {}) {
+  /**
+   * onProgress(loadedBytes, totalBytes) fires as the binary streams in;
+   * totalBytes is 0 when the server does not say (compressed transfer without
+   * a usable Content-Length), so treat 0 as "indeterminate".
+   */
+  static async load(url, { fetchImpl = fetch, onProgress } = {}) {
     // single-file builds embed bakes as base64 (tools/build-single.mjs); the
     // registry, when present, replaces the network entirely
     const inline = globalThis.__CROWDBAKE_INLINE;
     const name = url.split('/').pop().replace(/\.json$/, '');
     if (inline && inline[name]) {
       const bin = await (await fetch('data:application/octet-stream;base64,' + inline[name].bin)).arrayBuffer();
+      if (onProgress) onProgress(bin.byteLength, bin.byteLength);
       return new VATAsset(inline[name].manifest, bin);
     }
-    const manifest = await (await fetchImpl(url)).json();
+    const manRes = await fetchImpl(url);
+    if (!manRes.ok) throw new Error(`could not load ${name}.json (HTTP ${manRes.status})`);
+    let manifest;
+    try {
+      manifest = await manRes.json();
+    } catch (e) {
+      // SPA-style hosts answer missing files with index.html and HTTP 200
+      throw new Error(`there is no bake named "${name}" here (the server sent a page instead of a manifest)`);
+    }
     const binURL = new URL(manifest.binary, new URL(url, location.href)).href;
-    const bin = await (await fetchImpl(binURL)).arrayBuffer();
+    const res = await fetchImpl(binURL);
+    if (!res.ok) throw new Error(`could not load ${manifest.binary} (HTTP ${res.status})`);
+
+    let bin;
+    if (onProgress && res.body) {
+      // stream so the loading bar can show real byte progress. Content-Length
+      // on a compressed transfer counts compressed bytes while we count
+      // decompressed ones, so the fraction is clamped at the call site.
+      const total = parseInt(res.headers.get('Content-Length') || '0', 10) || 0;
+      const reader = res.body.getReader();
+      const chunks = [];
+      let loaded = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        loaded += value.byteLength;
+        onProgress(loaded, total);
+      }
+      const buf = new Uint8Array(loaded);
+      let o = 0;
+      for (const c of chunks) { buf.set(c, o); o += c.byteLength; }
+      bin = buf.buffer;
+    } else {
+      bin = await res.arrayBuffer();
+      if (onProgress) onProgress(bin.byteLength, bin.byteLength);
+    }
     return new VATAsset(manifest, bin);
   }
 }

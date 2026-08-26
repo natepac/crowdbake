@@ -56,6 +56,22 @@ function samplePixels(renderer) {
 
 const loading = document.getElementById('loading');
 const loadingText = document.getElementById('loading-text');
+const loadTrack = document.getElementById('load-track');
+const loadFill = document.getElementById('load-fill');
+
+// One call drives the whole loading screen: a stage line plus either a real
+// fraction or an indeterminate shimmer. Safe to call after teardown.
+function setLoad(stage, frac) {
+  if (!loading.isConnected) return;
+  loadingText.textContent = stage;
+  if (frac == null) loadTrack.classList.add('indet');
+  else {
+    loadTrack.classList.remove('indet');
+    loadFill.style.width = (Math.max(0, Math.min(1, frac)) * 100).toFixed(1) + '%';
+  }
+}
+const mb = (bytes) => (bytes / 1048576).toFixed(1);
+const nextFrame = () => new Promise((r) => requestAnimationFrame(r));
 
 async function main() {
   // ------------------------------------------------------------ renderer --
@@ -103,23 +119,37 @@ async function main() {
   const menagerie = assetName === 'menagerie';
   let assetSpecs;      // [{ asset (name), label }]
   if (menagerie) {
-    loadingText.textContent = 'loading menagerie manifest...';
+    setLoad('fetching the menagerie manifest...', null);
     const res = await fetch(bakedURL('menagerie'));
     if (!res.ok) throw new Error('no menagerie manifest - run: npm run bake:menagerie');
-    const man = await res.json();
+    let man;
+    try { man = await res.json(); }
+    catch (e) { throw new Error('no menagerie manifest on this host - run: npm run bake:menagerie'); }
     if (!man.assets || !man.assets.length) throw new Error('menagerie manifest is empty - run: npm run bake:menagerie');
     assetSpecs = man.assets.map((a) => ({ name: a.asset, label: a.kind }));
   } else {
     assetSpecs = [{ name: assetName, label: assetName }];
   }
 
+  // downloads own 0..80% of the bar, scene building the rest
+  const DL_SHARE = 0.8;
+  const nAssets = assetSpecs.length;
   const assets = [];
-  for (let i = 0; i < assetSpecs.length; i++) {
-    loadingText.textContent = `loading ${assetSpecs[i].label} (${i + 1}/${assetSpecs.length})...`;
-    assets.push(await VATAsset.load(bakedURL(assetSpecs[i].name)));
+  for (let i = 0; i < nAssets; i++) {
+    const label = assetSpecs[i].label;
+    const prefix = nAssets > 1 ? `${label} (${i + 1}/${nAssets})` : label;
+    setLoad(`downloading ${prefix}...`, (i / nAssets) * DL_SHARE);
+    assets.push(await VATAsset.load(bakedURL(assetSpecs[i].name), {
+      onProgress: (got, total) => {
+        const fileFrac = total > 0 ? Math.min(got / total, 1) : null;
+        if (fileFrac === null) setLoad(`downloading ${prefix} - ${mb(got)} MB...`, null);
+        else setLoad(`downloading ${prefix} - ${mb(got)} / ${mb(total)} MB`, ((i + fileFrac) / nAssets) * DL_SHARE);
+      },
+    }));
   }
 
-  loadingText.textContent = 'building crowd...';
+  setLoad('building the world...', DL_SHARE);
+  await nextFrame();
   const env = buildEnvironment(scene, { worldSize: WORLD_SIZE, shadowMapSize: 2048 });
 
   // --------------------------------------------------------------- crowds --
@@ -132,6 +162,10 @@ async function main() {
   const crowds = [];
   const sims = [];
   for (const a of assets) {
+    // keep the bar honest through the CPU-heavy build; paint every few kinds
+    setLoad(`spawning ${a.name} (${crowds.length + 1}/${K})...`,
+      DL_SHARE + 0.02 + (crowds.length / K) * (0.98 - DL_SHARE - 0.02));
+    if (K > 1 && crowds.length % 4 === 0) await nextFrame();
     const vcm = !!a.manifest.vertexColorMode;
     const c = new VATCrowd(a, {
       capacity: perCapacity,
@@ -181,6 +215,7 @@ async function main() {
     }
   }
   setTotalCount(startCount);
+  setLoad('first frame...', 1);
 
   // aggregate facades for the HUD and test hooks (K = 1 passes through cheaply)
   const aggStats = {
@@ -256,6 +291,13 @@ async function main() {
 
   const rig = new CameraRig(camera, renderer.domElement, { worldSize: WORLD_SIZE });
   const hud = new HUD();
+  const helpBox = document.querySelector('.help');
+  function setMetrics(on) {
+    state.showMetrics = on;
+    hud.el.style.display = on ? '' : 'none';
+    if (helpBox) helpBox.style.display = on ? '' : 'none';
+    gui.controllersRecursive().forEach((ctl) => ctl.updateDisplay());
+  }
   const bench = new Benchmark();
 
   // ------------------------------------------------------ paint minigun ---
@@ -311,6 +353,7 @@ async function main() {
     fov: 58,
     pixelRatio: Math.min(devicePixelRatio, 1.25),
     softShadows: false,
+    showMetrics: true,
     runBenchmark: () => startBenchmark(),
     resetCamera: () => { camera.position.set(28, 16, 44); rig.orbit.target.set(0, 1.2, 0); rig.setMode('orbit'); state.camera = 'orbit'; },
   };
@@ -406,6 +449,7 @@ async function main() {
   fGun.add(state, 'gunFireRate', 4, 40, 1).name('rounds / second').onChange((v) => { gun.fireRate = v; });
   fGun.add(state, 'clearPaint').name('clear paint');
 
+  gui.add(state, 'showMetrics').name('metrics panel (M)').onChange((v) => setMetrics(v));
   gui.add(state, 'runBenchmark').name('run benchmark');
 
   // ---- goober lab (dev server only: pick any critter kind, reroll its look) --
@@ -491,6 +535,7 @@ async function main() {
 
   addEventListener('keydown', (e) => {
     if (e.code === 'KeyH') gui.show(gui._hidden);
+    if (e.code === 'KeyM') setMetrics(!state.showMetrics);
     if (e.code === 'KeyB') startBenchmark();
     if (e.code === 'KeyG') setGunMode(!gun.enabled);
     if (e.code === 'KeyR') {
@@ -634,6 +679,7 @@ async function main() {
 
 main().catch((err) => {
   console.error(err);
+  loading.classList.add('error');
   loadingText.innerHTML = `<b>failed to start</b><br><span style="opacity:.7">${err.message}</span>`
     + '<br><br><code>npm run bake:demo</code> bakes the humanoid, <code>npm run bake:menagerie</code> bakes every goober.';
 });
