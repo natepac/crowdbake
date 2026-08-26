@@ -272,7 +272,7 @@ async function main() {
     crosshair.style.display = on ? 'block' : 'none';
     gui.controllersRecursive().forEach((ctl) => ctl.updateDisplay());
     hud.setNote(on
-      ? '<b>paint minigun</b> - click to lock, hold LMB to fire, WASD to move, R respawns the crowd'
+      ? '<b>paint minigun</b> - click to lock, hold LMB to fire, WASD to move, E/Q up/down (fly!), R respawns'
       : '');
   }
   addEventListener('mousedown', (e) => { if (e.button === 0 && gun.enabled && document.pointerLockElement) gun.triggerDown = true; });

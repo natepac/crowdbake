@@ -60,7 +60,9 @@ export class CameraRig {
     this.orbit.enabled = mode === 'orbit';
     if (mode === 'walk' || mode === 'gun') {
       this.walkPos.copy(this.camera.position);
-      this.walkPos.y = EYE_HEIGHT;
+      // gun mode keeps whatever altitude you came in with (strafing runs from
+      // the air are half the fun); walking always drops to eye height.
+      this.walkPos.y = mode === 'gun' ? Math.max(this.camera.position.y, 0.8) : EYE_HEIGHT;
       const dir = this.camera.getWorldDirection(this._tmp);
       this.walkYaw = Math.atan2(-dir.x, -dir.z);
       this.walkPitch = Math.asin(Math.max(-1, Math.min(1, dir.y)));

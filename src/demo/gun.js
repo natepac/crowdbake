@@ -24,11 +24,18 @@ import {
   Vector3,
 } from 'three';
 
-const TRACER_SPEED = 240;      // m/s, fast but visible
-const TRACER_LEN = 7;          // metres of glowing streak
+// Tracers are instant laser streaks: the full beam appears for one flash and
+// fades out, one rainbow hue per shot.
+const TRACER_LIFE = 0.14;      // seconds on screen
 const MAX_TRACERS = 256;
 const MAX_DROPLETS = 24576;
 const GRAVITY = 14;            // heavier than earth reads better for paint
+
+function hueToRgb(h) {
+  const i = (h * 6) | 0, f = h * 6 - i, q = 1 - f;
+  const rgb = [[1, f, 0], [q, 1, 0], [0, 1, f], [0, q, 1], [f, 0, 1], [1, 0, q]][i % 6];
+  return [0.25 + rgb[0] * 0.75, 0.25 + rgb[1] * 0.75, 0.25 + rgb[2] * 0.75];
+}
 
 function paintColor() {
   // vivid, saturated paint hues
@@ -71,6 +78,7 @@ export class GunSystem {
       geom.setAttribute('aStart', new Float32BufferAttribute(new Float32Array(n * 3), 3));
       geom.setAttribute('aDir', new Float32BufferAttribute(new Float32Array(n * 3), 3));
       geom.setAttribute('aInfo', new Float32BufferAttribute(new Float32Array(n * 3), 3)); // dist, t0, isHead
+      geom.setAttribute('aColor', new Float32BufferAttribute(new Float32Array(n * 3), 3));
       this.tracerGeom = geom;
       this.tracerMat = new ShaderMaterial({
         transparent: true,
@@ -81,23 +89,24 @@ export class GunSystem {
           attribute vec3 aStart;
           attribute vec3 aDir;
           attribute vec3 aInfo;
+          attribute vec3 aColor;
           uniform float uTime;
           varying float vAlpha;
+          varying vec3 vColor;
           void main() {
-            float dist = aInfo.x;
             float dt = uTime - aInfo.y;
-            float head = min(dt * ${TRACER_SPEED.toFixed(1)}, dist);
-            float tail = max(head - ${TRACER_LEN.toFixed(1)}, 0.0);
-            float d = aInfo.z > 0.5 ? head : tail;
-            // dead tracers collapse to a degenerate segment far below ground
-            bool dead = dt < 0.0 || tail >= dist;
-            vec3 p = dead ? vec3(0.0, -1000.0, 0.0) : aStart + aDir * d;
-            vAlpha = dead ? 0.0 : (1.0 - 0.35 * aInfo.z);
+            float k = dt / ${TRACER_LIFE.toFixed(3)};
+            bool dead = dt < 0.0 || k >= 1.0;
+            // the whole beam appears at once and fades; tail end dims slightly
+            vec3 p = dead ? vec3(0.0, -1000.0, 0.0) : aStart + aDir * (aInfo.z > 0.5 ? aInfo.x : 0.0);
+            vAlpha = dead ? 0.0 : (1.0 - k) * (1.0 - k) * (aInfo.z > 0.5 ? 1.0 : 0.55);
+            vColor = aColor;
             gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
           }`,
         fragmentShader: /* glsl */`
           varying float vAlpha;
-          void main() { gl_FragColor = vec4(1.0, 0.85, 0.35, vAlpha); }`,
+          varying vec3 vColor;
+          void main() { gl_FragColor = vec4(vColor, vAlpha); }`,
       });
       this.tracers = new LineSegments(geom, this.tracerMat);
       this.tracers.frustumCulled = false;
@@ -242,7 +251,7 @@ export class GunSystem {
     const hx = origin.x + dir.x * dist;
     const hy = origin.y + dir.y * dist;
     const hz = origin.z + dir.z * dist;
-    const arrive = this.time + dist / TRACER_SPEED;
+    const arrive = this.time + 0.03;   // lasers land now; the flash lingers
 
     if (hit.type === 'crowd') {
       // the character dies now (hitscan); the eruption arrives with the tracer
@@ -312,13 +321,18 @@ export class GunSystem {
     const start = g.attributes.aStart.array;
     const adir = g.attributes.aDir.array;
     const info = g.attributes.aInfo.array;
+    const colA = g.attributes.aColor.array;
+    // one rainbow hue per shot, stepping around the wheel
+    const hue = (this.shots * 0.077) % 1;
+    const c = hueToRgb(hue);
     for (let v = 0; v < 2; v++) {
       const o = (i * 2 + v) * 3;
       start[o] = origin.x; start[o + 1] = origin.y; start[o + 2] = origin.z;
       adir[o] = dir.x; adir[o + 1] = dir.y; adir[o + 2] = dir.z;
       info[o] = dist; info[o + 1] = this.time; info[o + 2] = v === 0 ? 1 : 0;
+      colA[o] = c[0]; colA[o + 1] = c[1]; colA[o + 2] = c[2];
     }
-    for (const name of ['aStart', 'aDir', 'aInfo']) {
+    for (const name of ['aStart', 'aDir', 'aInfo', 'aColor']) {
       const a = g.attributes[name];
       a.clearUpdateRanges();
       a.addUpdateRange(i * 2 * 3, 6);

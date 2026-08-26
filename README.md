@@ -324,10 +324,12 @@ post-frustum truth.)
 ## The paint minigun
 
 Press <kbd>G</kbd> (or pick **gun** under camera). Click to lock the pointer,
-hold LMB to fire, WASD to move; <kbd>R</kbd> respawns the crowd to the editor
-count. Infinite ammo, no spread: tracers streak to exactly where the crosshair
-sits, and whatever they hit erupts in a fountain of paint that speckles the
-floor for good.
+hold LMB to fire, WASD to move, <kbd>E</kbd>/<kbd>Q</kbd> to fly up and down —
+gun mode keeps whatever altitude you enter it at, so strafing runs from the air
+work. <kbd>R</kbd> respawns the crowd to the editor count. Infinite ammo, no
+spread: every round is an instant laser flash in its own rainbow hue, straight
+to the crosshair, and whatever it hits erupts in a fountain of paint that
+speckles the floor for good.
 
 How it works, since each piece is a pattern worth stealing:
 
