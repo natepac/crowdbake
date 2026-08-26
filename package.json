@@ -1,0 +1,29 @@
+{
+  "name": "crowdbake",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Bake skeletal and procedural animation into GPU textures; render 100k animated crowd instances in a handful of draw calls (three.js).",
+  "scripts": {
+    "bake": "node tools/bake.mjs",
+    "bake:demo": "node tools/bake.mjs --procgen --frames 48 --lods 5 --bones --out public/baked/crowd",
+    "export:glb": "node tools/export-gltf.mjs --frames 48 --out assets/humanoid.glb",
+    "verify": "node tools/verify.mjs public/baked/crowd",
+    "inspect": "node tools/inspect.mjs public/baked/crowd",
+    "test": "node tools/test.mjs",
+    "test:gpu": "npm run build && node tools/smoke.mjs",
+    "dev": "npm run bake:demo && vite",
+    "build": "npm run bake:demo && vite build",
+    "preview": "vite preview",
+    "bench": "node tools/bench-cpu.mjs",
+    "bake:goobers": "node tools/bake-goober.mjs --kind goober-biped --seed 7 --out tools/_out/goober-biped && node tools/bake.mjs --frames-dump tools/_out/goober-biped.frames.json --fps 40 --lods 5 --out public/baked/goober-biped && node tools/bake-goober.mjs --kind goober-quad --seed 12 --out tools/_out/goober-quad && node tools/bake.mjs --frames-dump tools/_out/goober-quad.frames.json --fps 40 --lods 5 --out public/baked/goober-quad && node tools/bake-goober.mjs --kind cat --seed 4 --out tools/_out/cat && node tools/bake.mjs --frames-dump tools/_out/cat.frames.json --fps 40 --lods 5 --out public/baked/cat"
+  },
+  "dependencies": {
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "lil-gui": "^0.20.0",
+    "puppeteer-core": "^25.9.0",
+    "vite": "^6.0.0"
+  }
+}

@@ -1,0 +1,7 @@
+node_modules/
+dist/
+public/baked/
+.DS_Store
+tools/_out/
+tools/smoke-out/
+assets/*.glb
