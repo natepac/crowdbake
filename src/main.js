@@ -24,8 +24,9 @@ const MAX_INSTANCES = 100000;
 
 const params = new URLSearchParams(location.search);
 const startCount = clamp(parseInt(params.get('count') || '20000', 10) || 20000, 1, MAX_INSTANCES);
-const ASSETS = ['crowd', 'goober-biped', 'goober-quad', 'cat'];
-const assetName = ASSETS.includes(params.get('asset')) ? params.get('asset') : 'crowd';
+// shipped bakes; in dev the list is replaced by whatever exists in public/baked
+const ASSETS = ['crowd', 'menagerie', 'goober-biped', 'goober-quad', 'goober-cat'];
+const assetName = (params.get('asset') || 'crowd').replace(/[^a-z0-9-]/g, '') || 'crowd';
 
 function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
 
@@ -84,39 +85,148 @@ async function main() {
   } catch (e) { void e; }
   console.log('WebGL adapter:', gpuName);
 
-  loadingText.textContent = 'loading bake...';
-  // Resolve against this module's own URL rather than the document URL, so the
-  // bake is found whether the page is served from the site root, from a
+  // --------------------------------------------------------------- assets --
+  // Resolve against this module's own URL rather than the document URL, so
+  // bakes are found whether the page is served from the site root, from a
   // subdirectory, or from a URL that is missing its trailing slash.
   // note: import.meta.url goes through a variable so Vite's static new URL()
   // analysis does not rewrite this into an (empty) build-time asset glob
   const metaUrl = import.meta.url;
-  const bakeURL = new URL('../baked/' + assetName + '.json', metaUrl).href;
-  const asset = await VATAsset.load(bakeURL);
-  const vertexColorMode = !!asset.manifest.vertexColorMode;
+  const bakedURL = (name) => new URL('../baked/' + name + '.json', metaUrl).href;
+
+  const menagerie = assetName === 'menagerie';
+  let assetSpecs;      // [{ asset (name), label }]
+  if (menagerie) {
+    loadingText.textContent = 'loading menagerie manifest...';
+    const res = await fetch(bakedURL('menagerie'));
+    if (!res.ok) throw new Error('no menagerie manifest - run: npm run bake:menagerie');
+    const man = await res.json();
+    if (!man.assets || !man.assets.length) throw new Error('menagerie manifest is empty - run: npm run bake:menagerie');
+    assetSpecs = man.assets.map((a) => ({ name: a.asset, label: a.kind }));
+  } else {
+    assetSpecs = [{ name: assetName, label: assetName }];
+  }
+
+  const assets = [];
+  for (let i = 0; i < assetSpecs.length; i++) {
+    loadingText.textContent = `loading ${assetSpecs[i].label} (${i + 1}/${assetSpecs.length})...`;
+    assets.push(await VATAsset.load(bakedURL(assetSpecs[i].name)));
+  }
 
   loadingText.textContent = 'building crowd...';
   const env = buildEnvironment(scene, { worldSize: WORLD_SIZE, shadowMapSize: 2048 });
 
-  const crowd = new VATCrowd(asset, {
-    capacity: MAX_INSTANCES,
-    materialOptions: vertexColorMode ? { vertexColors: true } : {},
-    mode: 'vat',
-    chunkSize: 24,
-    worldSize: WORLD_SIZE,
-    lodDistances: [6, 14, 34, 80],
-    crossFade: true,
-    crossFadeMaxLod: 1,
-    fadeDuration: 0.28,
-    castShadow: true,
-    receiveShadow: true,
-    initialChunkCapacity: 256,
-  });
-  scene.add(crowd);
+  // --------------------------------------------------------------- crowds --
+  // One VATCrowd + one CrowdSim per asset. The single-asset demo is just the
+  // K = 1 case; the menagerie runs one small crowd per goober kind. Known
+  // limitation: separation only acts within a kind, so different kinds can
+  // overlap in dense clusters.
+  const K = assets.length;
+  const perCapacity = Math.ceil(MAX_INSTANCES / K);
+  const crowds = [];
+  const sims = [];
+  for (const a of assets) {
+    const vcm = !!a.manifest.vertexColorMode;
+    const c = new VATCrowd(a, {
+      capacity: perCapacity,
+      materialOptions: vcm ? { vertexColors: true } : {},
+      mode: 'vat',
+      // 40 sparse crowds want bigger cells: same coverage, far fewer chunk
+      // objects, and the per-kind far pool still bounds the draw count
+      chunkSize: menagerie ? 84 : 24,
+      worldSize: WORLD_SIZE,
+      lodDistances: [6, 14, 34, 80],
+      crossFade: true,
+      crossFadeMaxLod: 1,
+      fadeDuration: 0.28,
+      castShadow: true,
+      receiveShadow: true,
+      initialChunkCapacity: K > 1 ? 64 : 256,
+    });
+    scene.add(c);
+    const s = new CrowdSim(c, {
+      worldSize: WORLD_SIZE,
+      obstacles: env.obstacles,
+      separation: true,
+      separationMaxAgents: 40000,
+      scenario: 'wander',
+      matchStride: true,
+      // vertex-colored assets carry their identity in the mesh; the instance
+      // tint is only a subtle hue shift, not the full apparel palette
+      tintMode: vcm ? 'subtle' : 'palette',
+    });
+    s.spawn(perCapacity);
+    crowds.push(c);
+    sims.push(s);
+  }
+  const crowd = crowds[0];
+  const sim = sims[0];
+  const asset = assets[0];
 
+  const eachCrowd = (fn) => crowds.forEach(fn);
+  const eachSim = (fn) => sims.forEach(fn);
+
+  function setTotalCount(total) {
+    const per = Math.floor(total / K);
+    let extra = total - per * K;
+    for (const c of crowds) {
+      c.count = per + (extra > 0 ? 1 : 0);
+      if (extra > 0) extra--;
+    }
+  }
+  setTotalCount(startCount);
+
+  // aggregate facades for the HUD and test hooks (K = 1 passes through cheaply)
+  const aggStats = {
+    instances: 0, drawnInstances: 0, renderedInstances: 0, chunks: 0,
+    activeChunks: 0, renderedChunks: 0, dirtyChunks: 0, farPooled: 0,
+    triangles: 0, lodCounts: [], uploadBytes: 0, bucketMs: 0, copyMs: 0,
+  };
+  const aggSimStats = { simMs: 0, sepMs: 0, clipSwitches: 0 };
+  const aggMemory = { positions: 0, normals: 0, bones: 0 };
+  for (const a of assets) {
+    aggMemory.positions += a.memory.positions;
+    aggMemory.normals += a.memory.normals;
+    aggMemory.bones += a.memory.bones;
+  }
+  const hudCrowd = K === 1 ? crowd : { stats: aggStats };
+  const hudSim = K === 1 ? sim : { stats: aggSimStats };
+  const hudAsset = K === 1 ? asset : { memory: aggMemory };
+
+  function aggregate() {
+    if (K === 1) return;
+    for (const k of Object.keys(aggStats)) if (typeof aggStats[k] === 'number') aggStats[k] = 0;
+    aggStats.lodCounts = new Array(assets[0].lods.length).fill(0);
+    for (const c of crowds) {
+      const s = c.stats;
+      aggStats.instances += s.instances;
+      aggStats.drawnInstances += s.drawnInstances;
+      aggStats.renderedInstances += s.renderedInstances;
+      aggStats.chunks += s.chunks;
+      aggStats.activeChunks += s.activeChunks;
+      aggStats.renderedChunks += s.renderedChunks;
+      aggStats.dirtyChunks += s.dirtyChunks;
+      aggStats.farPooled += s.farPooled;
+      aggStats.triangles += s.triangles;
+      aggStats.uploadBytes += s.uploadBytes;
+      aggStats.bucketMs += s.bucketMs;
+      aggStats.copyMs += s.copyMs;
+      for (let l = 0; l < s.lodCounts.length && l < aggStats.lodCounts.length; l++) {
+        aggStats.lodCounts[l] += s.lodCounts[l];
+      }
+    }
+    aggSimStats.simMs = 0; aggSimStats.sepMs = 0; aggSimStats.clipSwitches = 0;
+    for (const s of sims) {
+      aggSimStats.simMs += s.stats.simMs;
+      aggSimStats.sepMs += s.stats.sepMs;
+      aggSimStats.clipSwitches += s.stats.clipSwitches;
+    }
+  }
+
+  // ------------------------------------------------------------ humanoid ---
   // attachments read the bone texture even though the bodies are pure VAT;
   // frame-baked assets (goobers) have no bones and therefore no sockets
-  if (asset.boneTex && asset.sockets && asset.sockets.head !== undefined) {
+  if (K === 1 && asset.boneTex && asset.sockets && asset.sockets.head !== undefined) {
     const headRest = asset.manifest.boneRest[asset.sockets.head];
     const handRest = asset.manifest.boneRest[asset.sockets.handR];
     crowd.addAttachment(new VATAttachment(makeCapGeometry(), {
@@ -138,20 +248,6 @@ async function main() {
     }));
   }
 
-  const sim = new CrowdSim(crowd, {
-    worldSize: WORLD_SIZE,
-    obstacles: env.obstacles,
-    separation: true,
-    separationMaxAgents: 40000,
-    scenario: 'wander',
-    matchStride: true,
-    // vertex-colored assets carry their identity in the mesh; the instance tint
-    // is only a subtle hue shift, not the full apparel palette
-    tintMode: vertexColorMode ? 'subtle' : 'palette',
-  });
-  sim.spawn(MAX_INSTANCES);
-  crowd.count = startCount;
-
   const rig = new CameraRig(camera, renderer.domElement, { worldSize: WORLD_SIZE });
   const hud = new HUD();
   const bench = new Benchmark();
@@ -166,7 +262,7 @@ async function main() {
     mode: 'vat',
     crossFade: true,
     fadeDuration: 0.28,
-    chunkSize: 24,
+    chunkSize: menagerie ? 84 : 24,
     lodBias: 1,
     lod0: 6, lod1: 14, lod2: 34, lod3: 80,
     debugLod: false,
@@ -192,50 +288,48 @@ async function main() {
     resetCamera: () => { camera.position.set(28, 16, 44); rig.orbit.target.set(0, 1.2, 0); rig.setMode('orbit'); state.camera = 'orbit'; },
   };
 
-  const gui = new GUI({ title: 'VAT crowd', width: 300 });
+  const gui = new GUI({ title: menagerie ? `VAT menagerie (${K} kinds)` : 'VAT crowd', width: 300 });
   state.asset = assetName;
-  gui.add(state, 'asset', ASSETS).name('asset (reloads)').onChange((v) => {
-    const u = new URL(location.href);
-    u.searchParams.set('asset', v);
-    location.href = u.href;
-  });
+  let assetCtl = gui.add(state, 'asset', ASSETS.includes(assetName) ? ASSETS : [assetName, ...ASSETS])
+    .name('asset (reloads)')
+    .onChange(reloadWithAsset);
 
   const fCrowd = gui.addFolder('crowd');
-  fCrowd.add(state, 'count', 1, MAX_INSTANCES, 1).name('instances').onChange((v) => { crowd.count = v | 0; });
-  fCrowd.add(state, 'scenario', CrowdSim.scenarios).onChange((v) => sim.setScenario(v));
-  fCrowd.add(state, 'speedScale', 0, 2.5, 0.01).name('speed x').onChange((v) => { sim.options.speedScale = v; });
-  fCrowd.add(state, 'separation').name('separation').onChange((v) => { sim.options.separation = v; });
+  fCrowd.add(state, 'count', 1, MAX_INSTANCES, 1).name(menagerie ? 'instances (total)' : 'instances')
+    .onChange((v) => setTotalCount(v | 0));
+  fCrowd.add(state, 'scenario', CrowdSim.scenarios).onChange((v) => eachSim((s) => s.setScenario(v)));
+  fCrowd.add(state, 'speedScale', 0, 2.5, 0.01).name('speed x').onChange((v) => eachSim((s) => { s.options.speedScale = v; }));
+  fCrowd.add(state, 'separation').name('separation').onChange((v) => eachSim((s) => { s.options.separation = v; }));
 
   const fAnim = gui.addFolder('animation');
   fAnim.add(state, 'matchStride').name('stride matching').onChange((v) => {
-    sim.options.matchStride = v;
-    sim.refreshRates();
+    eachSim((s) => { s.options.matchStride = v; s.refreshRates(); });
     hud.setNote(v ? '' : '<b>stride matching off</b> - clips play at their authored rate, so feet slide');
   });
   fAnim.add(state, 'mode', ['vat', 'bone']).name('playback mode').onChange((v) => {
-    if (v === 'bone' && !asset.boneTex) {
+    if (v === 'bone' && !crowds.every((c) => c.asset.boneTex)) {
       state.mode = 'vat';
       gui.controllersRecursive().forEach((ctl) => ctl.updateDisplay());
       hud.setNote('this asset has no bone texture (frame-baked) - vat mode only');
       return;
     }
-    crowd.reconfigure({ mode: v });
+    eachCrowd((c) => c.reconfigure({ mode: v }));
   });
-  fAnim.add(state, 'crossFade').name('cross-fade').onChange((v) => crowd.reconfigure({ crossFade: v }));
-  fAnim.add(state, 'fadeDuration', 0.05, 1, 0.01).name('fade seconds').onChange((v) => crowd.reconfigure({ fadeDuration: v }));
+  fAnim.add(state, 'crossFade').name('cross-fade').onChange((v) => eachCrowd((c) => c.reconfigure({ crossFade: v })));
+  fAnim.add(state, 'fadeDuration', 0.05, 1, 0.01).name('fade seconds').onChange((v) => eachCrowd((c) => c.reconfigure({ fadeDuration: v })));
 
   state.farPool = true;
   const fPerf = gui.addFolder('culling + lod');
-  fPerf.add(state, 'farPool').name('merge far chunks').onChange((v) => crowd.reconfigure({ farPool: v }));
-  fPerf.add(state, 'chunkSize', 12, WORLD_SIZE, 1).name('chunk size (m)').onChange((v) => crowd.reconfigure({ chunkSize: v }));
-  fPerf.add(state, 'lodBias', 0.25, 4, 0.05).name('lod bias').onChange((v) => { crowd.options.lodBias = v; });
+  fPerf.add(state, 'farPool').name('merge far chunks').onChange((v) => eachCrowd((c) => c.reconfigure({ farPool: v })));
+  fPerf.add(state, 'chunkSize', 12, WORLD_SIZE, 1).name('chunk size (m)').onChange((v) => eachCrowd((c) => c.reconfigure({ chunkSize: v })));
+  fPerf.add(state, 'lodBias', 0.25, 4, 0.05).name('lod bias').onChange((v) => eachCrowd((c) => { c.options.lodBias = v; }));
   fPerf.add(state, 'lod0', 2, 120, 1).name('lod 0 -> 1 (m)').onChange(applyLod);
   fPerf.add(state, 'lod1', 4, 200, 1).name('lod 1 -> 2 (m)').onChange(applyLod);
   fPerf.add(state, 'lod2', 8, 300, 1).name('lod 2 -> 3 (m)').onChange(applyLod);
   fPerf.add(state, 'lod3', 16, 500, 1).name('lod 3 -> 4 (m)').onChange(applyLod);
-  fPerf.add(state, 'lodPivot', ['centre', 'edge']).name('lod measured from').onChange((v) => { crowd.options.lodPivot = v; });
-  fPerf.add(state, 'shadowMaxLod', 0, 4, 1).name('shadow casts to lod').onChange((v) => { crowd.options.shadowMaxLod = v; });
-  fPerf.add(state, 'debugLod').name('colour by lod').onChange((v) => crowd.setDebugLod(v));
+  fPerf.add(state, 'lodPivot', ['centre', 'edge']).name('lod measured from').onChange((v) => eachCrowd((c) => { c.options.lodPivot = v; }));
+  fPerf.add(state, 'shadowMaxLod', 0, 4, 1).name('shadow casts to lod').onChange((v) => eachCrowd((c) => { c.options.shadowMaxLod = v; }));
+  fPerf.add(state, 'debugLod').name('colour by lod').onChange((v) => eachCrowd((c) => c.setDebugLod(v)));
 
   const fRender = gui.addFolder('rendering');
   fRender.add(state, 'shadows').onChange((v) => {
@@ -244,7 +338,7 @@ async function main() {
     scene.traverse((o) => { if (o.material) o.material.needsUpdate = true; });
   });
   fRender.add(state, 'shading', ['lambert', 'pbr']).name('shading').onChange((v) => {
-    crowd.reconfigure({ quality: v });
+    eachCrowd((c) => c.reconfigure({ quality: v }));
   });
   fRender.add(state, 'antialias').name('msaa (reloads)').onChange((v) => {
     const u = new URL(location.href);
@@ -278,8 +372,59 @@ async function main() {
 
   gui.add(state, 'runBenchmark').name('run benchmark');
 
+  // ---- goober lab (dev server only: pick any critter kind, reroll its look) --
+  try {
+    const kindsRes = await fetch('__goobers/kinds');
+    if (kindsRes.ok) {
+      const kinds = await kindsRes.json();
+      const assetsRes = await fetch('__goobers/assets');
+      if (assetsRes.ok) {
+        const baked = await assetsRes.json();
+        if (baked.length) {
+          assetCtl = assetCtl.options(baked.sort()).name('asset (reloads)').onChange(reloadWithAsset);
+        }
+      }
+      const lab = gui.addFolder('goober lab (dev)');
+      const gs = {
+        kind: assetName.startsWith('goober-') ? assetName.replace(/^goober-/, '') : kinds[0].kind,
+        bake: () => bakeGoober(false),
+        regenerate: () => bakeGoober(true),
+      };
+      // preset names double as kinds; goober-* presets are stored without prefix
+      const kindNames = kinds.map((k) => k.kind);
+      if (!kindNames.includes(gs.kind) && kindNames.includes('goober-' + gs.kind)) gs.kind = 'goober-' + gs.kind;
+      lab.add(gs, 'kind', kindNames);
+      lab.add(gs, 'bake').name('bake this kind');
+      lab.add(gs, 'regenerate').name('regenerate (new look)');
+      let baking = false;
+      async function bakeGoober(reroll) {
+        if (baking) return;
+        baking = true;
+        const seed = reroll ? (1 + Math.floor(Math.random() * 0xffffff)) : 7;
+        hud.setNote(`<b>baking ${gs.kind}</b> (seed ${seed})... 15-60 s, the page reloads when done`);
+        try {
+          const r = await fetch(`__goobers/bake?kind=${encodeURIComponent(gs.kind)}&seed=${seed}`);
+          const body = await r.json();
+          if (!r.ok) { hud.setNote(`<b>bake failed</b><br>${(body.error || r.status)}`); return; }
+          // regenerating from inside the menagerie keeps you in the menagerie
+          reloadWithAsset(menagerie ? 'menagerie' : body.asset);
+        } catch (e) {
+          hud.setNote('<b>bake failed</b><br>' + e.message);
+        } finally {
+          baking = false;
+        }
+      }
+    }
+  } catch (e) { void e; /* static hosting: no dev API, no panel */ }
+
+  function reloadWithAsset(name) {
+    const u = new URL(location.href);
+    u.searchParams.set('asset', name);
+    location.href = u.href;
+  }
+
   function applyLod() {
-    crowd.options.lodDistances = [state.lod0, state.lod1, state.lod2, state.lod3];
+    eachCrowd((c) => { c.options.lodDistances = [state.lod0, state.lod1, state.lod2, state.lod3]; });
   }
   function applySun() {
     env.setSunAngle(state.sunAzimuth, state.sunElevation);
@@ -289,13 +434,13 @@ async function main() {
   function startBenchmark() {
     hud.setNote('benchmark starting...');
     bench.start(MAX_INSTANCES, (c) => {
-      crowd.count = c;
+      setTotalCount(c);
       state.count = c;
       gui.controllersRecursive().forEach((ctl) => ctl.updateDisplay());
     }, (results) => {
       hud.setNote('<b>benchmark</b>' + bench.toTable());
       console.table(results);
-      crowd.count = state.count;
+      setTotalCount(state.count);
     });
   }
 
@@ -322,35 +467,33 @@ async function main() {
   // a given instance count, with no rendering involved. Useful for spotting an
   // accidental O(n^2) without needing a fast GPU.
   window.__vat.cpuBench = (n, iters = 40, warmup = 12) => {
-    const restore = crowd.count;
-    crowd.count = Math.min(n, crowd.capacity);
-    // Warm up first: the frames right after a count change pay for chunk
-    // growth and a full attribute re-upload, which is not steady-state cost.
+    const restore = crowds.map((c) => c.count);
+    setTotalCount(Math.min(n, MAX_INSTANCES));
     for (let i = 0; i < warmup; i++) {
-      sim.update(1 / 60, WORLD_SIZE);
-      crowd.update(1 / 60, camera);
+      eachSim((s) => s.update(1 / 60, WORLD_SIZE));
+      eachCrowd((c) => c.update(1 / 60, camera));
     }
     let sim0 = 0, crowd0 = 0;
     for (let i = 0; i < iters; i++) {
       let t = performance.now();
-      sim.update(1 / 60, WORLD_SIZE);
+      eachSim((s) => s.update(1 / 60, WORLD_SIZE));
       sim0 += performance.now() - t;
       t = performance.now();
-      crowd.update(1 / 60, camera);
+      eachCrowd((c) => c.update(1 / 60, camera));
       crowd0 += performance.now() - t;
     }
     const out = {
-      count: crowd.count,
+      count: crowds.reduce((s, c) => s + c.count, 0),
       simMs: +(sim0 / iters).toFixed(3),
       crowdMs: +(crowd0 / iters).toFixed(3),
       totalMs: +((sim0 + crowd0) / iters).toFixed(3),
-      chunks: crowd.stats.chunks,
-      dirtyChunks: crowd.stats.dirtyChunks,
-      bucketMs: +crowd.stats.bucketMs.toFixed(3),
-      copyMs: +crowd.stats.copyMs.toFixed(3),
-      uploadMB: +(crowd.stats.uploadBytes / 1048576).toFixed(2),
+      chunks: crowds.reduce((s, c) => s + c.stats.chunks, 0),
+      dirtyChunks: crowds.reduce((s, c) => s + c.stats.dirtyChunks, 0),
+      bucketMs: +crowds.reduce((s, c) => s + c.stats.bucketMs, 0).toFixed(3),
+      copyMs: +crowds.reduce((s, c) => s + c.stats.copyMs, 0).toFixed(3),
+      uploadMB: +(crowds.reduce((s, c) => s + c.stats.uploadBytes, 0) / 1048576).toFixed(2),
     };
-    crowd.count = restore;
+    crowds.forEach((c, i) => { c.count = restore[i]; });
     return out;
   };
 
@@ -363,8 +506,8 @@ async function main() {
     last = now;
 
     rig.update(dt);
-    sim.update(dt, WORLD_SIZE);
-    crowd.update(dt, camera);
+    for (const s of sims) s.update(dt, WORLD_SIZE);
+    for (const c of crowds) c.update(dt, camera);
     // widen the shadow window as the camera pulls back, so a zoomed-out crowd
     // keeps its grounding shadows instead of losing them at the 70 m edge
     let shadowR = state.shadowRadius;
@@ -382,13 +525,14 @@ async function main() {
       window.__vat.wantSample = false;
     }
 
+    aggregate();
     frameMs = performance.now() - now;
     bench.update(realDt, frameMs, {
       drawCalls: renderer.info.render.calls,
       triangles: renderer.info.render.triangles,
     });
     if (bench.active) hud.setNote(bench.progressText);
-    hud.update(realDt, frameMs, renderer, crowd, sim, asset);
+    hud.update(realDt, frameMs, renderer, hudCrowd, hudSim, hudAsset);
 
     // dynamic resolution: walk the pixel ratio toward the target frame rate.
     // The manual slider is the ceiling. Paused during benchmarks.
@@ -407,20 +551,21 @@ async function main() {
 
     // smoke-test hooks (tools/smoke.mjs reads these)
     frameNo++;
+    const st = hudCrowd.stats;
     window.__vat.frames = frameNo;
     window.__vat.ms = frameMs;          // js submission cost only
     window.__vat.realMs = realDt * 1000; // wall clock, includes GPU
     window.__vat.stats = {
       drawCalls: renderer.info.render.calls,
       triangles: renderer.info.render.triangles,
-      instances: crowd.stats.instances,
-      drawn: crowd.stats.drawnInstances,
-      rendered: crowd.stats.renderedInstances,
-      farPooled: crowd.stats.farPooled,
-      chunks: crowd.stats.chunks,
-      activeChunks: crowd.stats.activeChunks,
-      renderedChunks: crowd.stats.renderedChunks,
-      lodCounts: Array.from(crowd.stats.lodCounts),
+      instances: st.instances,
+      drawn: st.drawnInstances,
+      rendered: st.renderedInstances,
+      farPooled: st.farPooled,
+      chunks: st.chunks,
+      activeChunks: st.activeChunks,
+      renderedChunks: st.renderedChunks,
+      lodCounts: Array.from(st.lodCounts),
       programs: renderer.info.programs ? renderer.info.programs.length : 0,
     };
     if (frameNo > 4) window.__vat.ready = true;
@@ -429,17 +574,15 @@ async function main() {
   loading.classList.add('done');
   setTimeout(() => loading.remove(), 700);
 
-  Object.assign(window, { renderer, scene, camera, crowd, sim, asset, env, rig, gui });
-  console.log('%cVAT crowd', 'font-weight:bold', {
-    clips: asset.clips.map((c) => `${c.name} stride=${c.stride.toFixed(3)}m`),
-    animationTextureMB: +((asset.memory.positions + asset.memory.normals) / 1048576).toFixed(2),
-    boneTextureKB: +(asset.memory.bones / 1024).toFixed(1),
-    lods: asset.lods.map((l) => `${l.vertexCount}v / ${l.triangleCount}t`),
+  Object.assign(window, { renderer, scene, camera, crowd, sim, asset, crowds, sims, assets, env, rig, gui });
+  console.log('%cVAT ' + (menagerie ? `menagerie: ${K} kinds` : assetName), 'font-weight:bold', {
+    kinds: assetSpecs.map((a) => a.label),
+    animationTextureMB: +((aggMemory.positions + aggMemory.normals || asset.memory.positions + asset.memory.normals) / 1048576).toFixed(2),
   });
 }
 
 main().catch((err) => {
   console.error(err);
   loadingText.innerHTML = `<b>failed to start</b><br><span style="opacity:.7">${err.message}</span>`
-    + '<br><br>run <code>npm run bake:demo</code> first if <code>public/baked/crowd.json</code> is missing.';
+    + '<br><br><code>npm run bake:demo</code> bakes the humanoid, <code>npm run bake:menagerie</code> bakes every goober.';
 });

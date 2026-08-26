@@ -347,12 +347,27 @@ baking any procedurally animated thing:
    attachments and no bone playback mode — the demo greys those out.
 
 ```
-npm run bake:goobers    # goober-biped, goober-quad, cat
+npm run bake:goobers      # the three shipped kinds (biped, quad, cat)
+npm run bake:menagerie    # every kind (~40), plus the menagerie manifest
 ```
 
 Then pick the asset in the demo panel, or `?asset=goober-biped`. Vertex colors
 carry the goober's identity; instances get a subtle per-instance hue shift
 instead of the humanoid's shirt/pants palette.
+
+**The menagerie** (`?asset=menagerie`) instances every baked kind together in
+one scene: one small VATCrowd + sim per kind, sharing the world. The instances
+slider is the total across all kinds, and each kind's gait ladder is scaled by
+its own captured walk speed, so cats trot and golems trudge. Known limitation:
+separation only acts within a kind, so different kinds can overlap in dense
+clusters.
+
+**Live regeneration (dev server).** `npm run dev` adds a `goober lab` panel:
+pick any of the ~40 kinds, *bake this kind* (fixed seed) or *regenerate (new
+look)* (random seed - same species, new body). The dev server captures and
+bakes on demand (15-60 s) and reloads when done; regenerating from inside the
+menagerie drops the new look straight back into it. The goobers app is vendored
+at `vendor/goobers/`, so all of this works from a fresh clone.
 
 ---
 

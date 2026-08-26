@@ -18,12 +18,12 @@ import { performance } from 'node:perf_hooks';
 import puppeteer from 'puppeteer-core';
 import { snapFrame, capsuleTemplate } from './lib/goober-sdf.mjs';
 
-const GOOBERS_DIR = 'C:/Projects/MGameExample/goobers';
+const DEFAULT_GOOBERS_DIR = 'vendor/goobers';
 const GROUND_R = 260;
 const groundY = (x, z) => { const q = GROUND_R * GROUND_R - x * x - z * z; return q > 0 ? Math.sqrt(q) - GROUND_R : -2; };
 
 function parseArgs(argv) {
-  const o = { kind: 'goober-biped', seed: 7, out: null, fps: 40, captureSec: 6, warmupSec: 4, quiet: false };
+  const o = { kind: 'goober-biped', seed: 7, out: null, fps: 40, captureSec: 6, warmupSec: 4, quiet: false, list: false, dir: DEFAULT_GOOBERS_DIR };
   for (let i = 0; i < argv.length; i++) {
     const next = () => argv[++i];
     switch (argv[i]) {
@@ -31,6 +31,8 @@ function parseArgs(argv) {
       case '--seed': o.seed = parseInt(next(), 10); break;
       case '--out': o.out = next(); break;
       case '--fps': o.fps = parseFloat(next()); break;
+      case '--dir': o.dir = next(); break;
+      case '--list': o.list = true; break;
       case '--quiet': o.quiet = true; break;
       default: break;
     }
@@ -62,7 +64,7 @@ async function main() {
   const log = opts.quiet ? () => {} : (...a) => console.log(...a);
   const t0 = performance.now();
 
-  const { server, port } = await serve(GOOBERS_DIR);
+  const { server, port } = await serve(path.resolve(opts.dir));
   const exe = BROWSERS.find((b) => fs.existsSync(b));
   const browser = await puppeteer.launch({
     executablePath: exe,
@@ -102,6 +104,21 @@ async function main() {
   log(`goober        ${opts.kind}  (seed ${opts.seed})`);
   await page.goto(`http://127.0.0.1:${port}/goobers.html`, { waitUntil: 'networkidle0', timeout: 60000 });
   await page.waitForFunction('window.__goobersReady === true', { timeout: 60000 });
+
+  if (opts.list) {
+    // every preset kind across every family, as machine-readable JSON
+    const kinds = await page.evaluate(() => {
+      const out = [];
+      for (const f of window.GOOBERS.families) {
+        for (const k of window.GOOBERS.presets(f)) out.push({ kind: k, family: f });
+      }
+      return out;
+    });
+    console.log(JSON.stringify(kinds));
+    await browser.close();
+    server.close();
+    return;
+  }
 
   // ---- capture one clip: drive update() with a fixed timestep -------------
   const capture = (mode, seconds, warmup) => page.evaluate((mode2, seconds2, warmup2, fps) => {
