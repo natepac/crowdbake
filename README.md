@@ -354,13 +354,14 @@ How it works, since each piece is a pattern worth stealing:
 
 ## Shipping as one file
 
-`npm run build:single` writes **`dist/crowdbake.html`** -- the whole app in a
-single HTML file (bundle inlined, bakes embedded as base64) for hosts where one
-upload is the entire deployment. ~39 MB with the humanoid and the three shipped
-goobers; `node tools/build-single.mjs --assets crowd` makes a lean ~11 MB file.
-It boots from a plain `file://` open, so it works anywhere that serves bytes.
-The menagerie stays multi-file -- 40 kinds is a quarter gigabyte, which no
-single page should be.
+`npm run build:single` makes **`dist/index.html` itself the whole app** in a
+single HTML file (bundle inlined, bakes embedded as base64) -- post that one
+file anywhere and it runs; `dist/crowdbake.html` is the same bytes under a
+name that survives being dropped next to an existing site. ~39 MB with the
+humanoid and the three shipped goobers; add `-- --assets crowd` for a lean
+~11 MB file. It boots from a plain `file://` open, so it works anywhere that
+serves bytes. The menagerie stays multi-file (40 kinds is a quarter gigabyte);
+keeping `dist/baked/` next to the single file re-enables `?asset=menagerie`.
 
 ---
 

@@ -25,7 +25,10 @@ const dist = path.resolve('dist');
 const html = fs.readFileSync(path.join(dist, 'index.html'), 'utf8');
 
 const scriptMatch = html.match(/<script type="module"[^>]*src="\.\/(assets\/index-[^"]+\.js)"[^>]*><\/script>/);
-if (!scriptMatch) throw new Error('could not find the module script tag in dist/index.html');
+if (!scriptMatch) {
+  throw new Error('dist/index.html is already inlined (or not a Vite build) - run "npm run build" first;'
+    + ' "npm run build:single" does both in order');
+}
 const bundle = fs.readFileSync(path.join(dist, scriptMatch[1]), 'utf8')
   .replace(/<\/script>/g, '<\\/script>');
 
@@ -53,7 +56,12 @@ const registryScript = '<script>window.__CROWDBAKE_INLINE=' + JSON.stringify(reg
 const out = html.replace(scriptMatch[0],
   () => registryScript + '\n<script type="module">' + bundle + '</script>');
 
-const outPath = path.join(dist, 'crowdbake.html');
-fs.writeFileSync(outPath, out);
-console.log(`\ndist/crowdbake.html  ${(fs.statSync(outPath).size / 1048576).toFixed(1)} MB `
+// dist/index.html IS the all-in-one file, so posting it anywhere (or the whole
+// dist folder) just works; crowdbake.html is the same bytes under a name that
+// survives being dropped next to some other site's index.
+fs.writeFileSync(path.join(dist, 'index.html'), out);
+fs.writeFileSync(path.join(dist, 'crowdbake.html'), out);
+const mbOut = (fs.statSync(path.join(dist, 'index.html')).size / 1048576).toFixed(1);
+console.log(`\ndist/index.html + dist/crowdbake.html  ${mbOut} MB each `
   + `(${argAssets.length} assets, ${(assetBytes / 1048576).toFixed(1)} MB binary before base64)`);
+console.log('either file is the whole app; dist/baked/ alongside them still enables ?asset=menagerie');
