@@ -321,6 +321,47 @@ post-frustum truth.)
 
 ---
 
+## The paint minigun
+
+Press <kbd>G</kbd> (or pick **gun** under camera). Click to lock the pointer,
+hold LMB to fire, WASD to move; <kbd>R</kbd> respawns the crowd to the editor
+count. Infinite ammo, no spread: tracers streak to exactly where the crosshair
+sits, and whatever they hit erupts in a fountain of paint that speckles the
+floor for good.
+
+How it works, since each piece is a pattern worth stealing:
+
+- **Hit detection** is analytic, not mesh raycasting. Every instance is a
+  cylinder derived from its interleaved record (position, yaw, scale x the
+  asset's baked bounds), and the crowd's chunk grid -- rebuilt every frame for
+  culling anyway -- doubles as the broadphase. A round samples grid cells along
+  its XZ track and tests a few dozen candidates, not 100,000.
+- **Kills** swap the last live agent into the dead slot across both the sim
+  arrays and the 64-byte instance record, so indices stay dense and nothing
+  else notices. Slots beyond the count keep their state, which is why
+  <kbd>R</kbd> resurrects the fallen exactly where they fell.
+- **Tracers and droplets** are fire-and-forget GPU ring buffers: the CPU writes
+  one record at spawn and the vertex shader evaluates ballistic flight from
+  `uTime` alone. A screenful of paint spray costs no per-frame CPU.
+- **Floor paint** accumulates in one world-covering render target; a splat is
+  "draw a blob quad into the target once", so ten thousand splats render at the
+  same cost as one. Droplet landing times are solved analytically at spawn and
+  scheduled as speckles, so the ring appears exactly where the droplets land.
+
+---
+
+## Shipping as one file
+
+`npm run build:single` writes **`dist/crowdbake.html`** -- the whole app in a
+single HTML file (bundle inlined, bakes embedded as base64) for hosts where one
+upload is the entire deployment. ~39 MB with the humanoid and the three shipped
+goobers; `node tools/build-single.mjs --assets crowd` makes a lean ~11 MB file.
+It boots from a plain `file://` open, so it works anywhere that serves bytes.
+The menagerie stays multi-file -- 40 kinds is a quarter gigabyte, which no
+single page should be.
+
+---
+
 ## Baking things that are not skinned rigs (goobers)
 
 `tools/bake-goober.mjs` bakes the SDF blend-shell critters from

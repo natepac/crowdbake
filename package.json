@@ -17,7 +17,8 @@
     "preview": "vite preview",
     "bench": "node tools/bench-cpu.mjs",
     "bake:goobers": "node tools/bake-goober.mjs --kind goober-biped --seed 7 --out tools/_out/goober-biped --quiet && node tools/bake.mjs --frames-dump tools/_out/goober-biped.frames.json --fps 40 --lods 5 --out public/baked/goober-biped --quiet && node tools/bake-goober.mjs --kind goober-quad --seed 12 --out tools/_out/goober-quad --quiet && node tools/bake.mjs --frames-dump tools/_out/goober-quad.frames.json --fps 40 --lods 5 --out public/baked/goober-quad --quiet && node tools/bake-goober.mjs --kind cat --seed 4 --out tools/_out/goober-cat --quiet && node tools/bake.mjs --frames-dump tools/_out/goober-cat.frames.json --fps 40 --lods 5 --out public/baked/goober-cat --quiet",
-    "bake:menagerie": "node tools/bake-menagerie.mjs"
+    "bake:menagerie": "node tools/bake-menagerie.mjs",
+    "build:single": "npm run build && node tools/build-single.mjs"
   },
   "dependencies": {
     "three": "^0.180.0"

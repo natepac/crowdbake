@@ -18,14 +18,20 @@ import { CameraRig } from './demo/camera-rig.js';
 import { HUD } from './demo/hud.js';
 import { Benchmark } from './demo/benchmark.js';
 import { makeCapGeometry, makeBalloonGeometry } from './demo/props.js';
+import { PaintSystem } from './demo/paint.js';
+import { GunSystem } from './demo/gun.js';
 
 const WORLD_SIZE = 420;
 const MAX_INSTANCES = 100000;
 
 const params = new URLSearchParams(location.search);
 const startCount = clamp(parseInt(params.get('count') || '20000', 10) || 20000, 1, MAX_INSTANCES);
-// shipped bakes; in dev the list is replaced by whatever exists in public/baked
-const ASSETS = ['crowd', 'menagerie', 'goober-biped', 'goober-quad', 'goober-cat'];
+// shipped bakes; in dev the list is replaced by whatever exists in public/baked,
+// and a single-file build lists exactly what it embeds
+const INLINE_BAKES = globalThis.__CROWDBAKE_INLINE || null;
+const ASSETS = INLINE_BAKES
+  ? Object.keys(INLINE_BAKES)
+  : ['crowd', 'menagerie', 'goober-biped', 'goober-quad', 'goober-cat'];
 const assetName = (params.get('asset') || 'crowd').replace(/[^a-z0-9-]/g, '') || 'crowd';
 
 function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
@@ -252,6 +258,27 @@ async function main() {
   const hud = new HUD();
   const bench = new Benchmark();
 
+  // ------------------------------------------------------ paint minigun ---
+  const paint = new PaintSystem(renderer, env.ground, { worldSize: WORLD_SIZE });
+  const gun = new GunSystem(scene, camera, {
+    crowds, sims, obstacles: env.obstacles, paint, worldSize: WORLD_SIZE,
+  });
+  const crosshair = document.getElementById('crosshair');
+
+  function setGunMode(on) {
+    state.camera = on ? 'gun' : 'orbit';
+    rig.setMode(state.camera);
+    gun.setEnabled(on);
+    crosshair.style.display = on ? 'block' : 'none';
+    gui.controllersRecursive().forEach((ctl) => ctl.updateDisplay());
+    hud.setNote(on
+      ? '<b>paint minigun</b> - click to lock, hold LMB to fire, WASD to move, R respawns the crowd'
+      : '');
+  }
+  addEventListener('mousedown', (e) => { if (e.button === 0 && gun.enabled && document.pointerLockElement) gun.triggerDown = true; });
+  addEventListener('mouseup', (e) => { if (e.button === 0) gun.triggerDown = false; });
+  document.addEventListener('pointerlockchange', () => { if (!document.pointerLockElement) gun.triggerDown = false; });
+
   // ----------------------------------------------------------------- gui --
   const state = {
     count: startCount,
@@ -366,14 +393,25 @@ async function main() {
   fRender.add(state, 'pixelRatio', 0.5, 2, 0.05).name('pixel ratio').onChange((v) => renderer.setPixelRatio(v));
 
   const fCam = gui.addFolder('camera');
-  fCam.add(state, 'camera', ['orbit', 'walk', 'tour']).onChange((v) => rig.setMode(v));
+  fCam.add(state, 'camera', ['orbit', 'walk', 'gun', 'tour']).onChange((v) => {
+    if (v === 'gun') setGunMode(true);
+    else { rig.setMode(v); gun.setEnabled(false); crosshair.style.display = 'none'; }
+  });
   fCam.add(state, 'fov', 30, 100, 1).onChange((v) => { camera.fov = v; camera.updateProjectionMatrix(); });
   fCam.add(state, 'resetCamera').name('reset camera');
+
+  const fGun = gui.addFolder('paint minigun');
+  state.gunFireRate = 18;
+  state.clearPaint = () => paint.clear();
+  fGun.add(state, 'gunFireRate', 4, 40, 1).name('rounds / second').onChange((v) => { gun.fireRate = v; });
+  fGun.add(state, 'clearPaint').name('clear paint');
 
   gui.add(state, 'runBenchmark').name('run benchmark');
 
   // ---- goober lab (dev server only: pick any critter kind, reroll its look) --
   try {
+    // single-file and file:// contexts have no dev API by definition
+    if (INLINE_BAKES || location.protocol === 'file:') throw new Error('no dev api');
     const kindsRes = await fetch('__goobers/kinds');
     if (kindsRes.ok) {
       const kinds = await kindsRes.json();
@@ -454,6 +492,12 @@ async function main() {
   addEventListener('keydown', (e) => {
     if (e.code === 'KeyH') gui.show(gui._hidden);
     if (e.code === 'KeyB') startBenchmark();
+    if (e.code === 'KeyG') setGunMode(!gun.enabled);
+    if (e.code === 'KeyR') {
+      // respawn to the editor's instance count; dead slots come back where they fell
+      setTotalCount(state.count);
+      if (gun.enabled) hud.setNote(`respawned to ${state.count.toLocaleString()} - ${gun.kills.toLocaleString()} kills so far`);
+    }
   });
 
   let last = performance.now();
@@ -461,6 +505,7 @@ async function main() {
   let resTimer = 0;
   let resFrames = 0;
   let frameNo = 0;
+  let lastKills = -1, lastShots = -1;
   window.__vat = { ready: false, frames: 0, errors: [] };
 
   // CPU-side scaling probe: how long do the sim and the chunk/LOD pass take at
@@ -508,6 +553,8 @@ async function main() {
     rig.update(dt);
     for (const s of sims) s.update(dt, WORLD_SIZE);
     for (const c of crowds) c.update(dt, camera);
+    gun.update(dt);
+    paint.flush();
     // widen the shadow window as the camera pulls back, so a zoomed-out crowd
     // keeps its grounding shadows instead of losing them at the 70 m edge
     let shadowR = state.shadowRadius;
@@ -532,6 +579,10 @@ async function main() {
       triangles: renderer.info.render.triangles,
     });
     if (bench.active) hud.setNote(bench.progressText);
+    else if (gun.enabled && (gun.kills !== lastKills || gun.shots !== lastShots)) {
+      lastKills = gun.kills; lastShots = gun.shots;
+      hud.setNote(`<b>minigun</b> ${gun.kills.toLocaleString()} kills / ${gun.shots.toLocaleString()} rounds / ${paint.splatCount.toLocaleString()} splats - R respawns`);
+    }
     hud.update(realDt, frameMs, renderer, hudCrowd, hudSim, hudAsset);
 
     // dynamic resolution: walk the pixel ratio toward the target frame rate.
@@ -574,7 +625,7 @@ async function main() {
   loading.classList.add('done');
   setTimeout(() => loading.remove(), 700);
 
-  Object.assign(window, { renderer, scene, camera, crowd, sim, asset, crowds, sims, assets, env, rig, gui });
+  Object.assign(window, { renderer, scene, camera, crowd, sim, asset, crowds, sims, assets, env, rig, gui, gun, paint, setGunMode });
   console.log('%cVAT ' + (menagerie ? `menagerie: ${K} kinds` : assetName), 'font-weight:bold', {
     kinds: assetSpecs.map((a) => a.label),
     animationTextureMB: +((aggMemory.positions + aggMemory.normals || asset.memory.positions + asset.memory.normals) / 1048576).toFixed(2),

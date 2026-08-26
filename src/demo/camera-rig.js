@@ -39,12 +39,12 @@ export class CameraRig {
       if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') this.walkSpeed = 6;
     };
     this._onMouseMove = (e) => {
-      if (this.mode !== 'walk' || document.pointerLockElement !== this.dom) return;
+      if ((this.mode !== 'walk' && this.mode !== 'gun') || document.pointerLockElement !== this.dom) return;
       this.walkYaw -= e.movementX * 0.0022;
       this.walkPitch = Math.max(-1.4, Math.min(1.4, this.walkPitch - e.movementY * 0.0022));
     };
     this._onClick = () => {
-      if (this.mode === 'walk' && document.pointerLockElement !== this.dom) this.dom.requestPointerLock();
+      if ((this.mode === 'walk' || this.mode === 'gun') && document.pointerLockElement !== this.dom) this.dom.requestPointerLock();
     };
 
     window.addEventListener('keydown', this._onKeyDown);
@@ -55,10 +55,10 @@ export class CameraRig {
 
   setMode(mode) {
     if (mode === this.mode) return;
-    if (this.mode === 'walk' && document.pointerLockElement === this.dom) document.exitPointerLock();
+    if ((this.mode === 'walk' || this.mode === 'gun') && document.pointerLockElement === this.dom) document.exitPointerLock();
     this.mode = mode;
     this.orbit.enabled = mode === 'orbit';
-    if (mode === 'walk') {
+    if (mode === 'walk' || mode === 'gun') {
       this.walkPos.copy(this.camera.position);
       this.walkPos.y = EYE_HEIGHT;
       const dir = this.camera.getWorldDirection(this._tmp);

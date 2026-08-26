@@ -158,6 +158,28 @@ export class CrowdSim {
     crowd.count = n;
   }
 
+  /**
+   * Remove one agent by swapping the last active agent into its slot -- both
+   * the sim arrays and the crowd's interleaved instance record move together,
+   * so indices stay dense. Slots beyond count keep their state; raising the
+   * count again "respawns" the dead exactly where they fell.
+   */
+  removeAgent(i) {
+    const c = this.crowd;
+    const last = c.count - 1;
+    if (i < 0 || i > last) return;
+    if (i !== last) {
+      for (const a of [this.px, this.pz, this.vx, this.vz, this.tx, this.tz,
+        this.desired, this.yaw, this.nextSwitch, this.personal]) a[i] = a[last];
+      this.clip[i] = this.clip[last];
+      for (let k = 0; k < 4; k++) this.nb[i * 4 + k] = this.nb[last * 4 + k];
+      c.data.copyWithin(i * 16, last * 16, last * 16 + 16);
+      c.prevChunk[i] = c.prevChunk[last];
+      c.animDirty[i] = 1;
+    }
+    c.count = last;
+  }
+
   pickTarget(i) {
     const half = this.options.worldSize * 0.45;
     this.tx[i] = (Math.random() * 2 - 1) * half;

@@ -49,6 +49,18 @@
     border: 1px solid rgba(255,255,255,0.14);
   }
 
+  #crosshair {
+    position: fixed; left: 50%; top: 50%; z-index: 15;
+    width: 26px; height: 26px; margin: -13px 0 0 -13px;
+    pointer-events: none; display: none;
+  }
+  #crosshair::before, #crosshair::after {
+    content: ''; position: absolute; background: rgba(255,255,255,0.85);
+    box-shadow: 0 0 3px rgba(0,0,0,0.8);
+  }
+  #crosshair::before { left: 12px; top: 2px; width: 2px; height: 22px; }
+  #crosshair::after { left: 2px; top: 12px; width: 22px; height: 2px; }
+
   #loading {
     position: fixed; inset: 0; z-index: 50; display: grid; place-items: center;
     background: #0d1117; transition: opacity .55s ease;
@@ -66,9 +78,10 @@
 </head>
 <body>
   <div id="loading"><div><div class="lds"></div><div id="loading-text">starting...</div></div></div>
+  <div id="crosshair"></div>
   <div class="help">
     <b>orbit</b> drag / scroll &nbsp; <b>walk</b> click to lock, <kbd>WASD</kbd> <kbd>Q</kbd><kbd>E</kbd>, <kbd>Shift</kbd> sprint<br>
-    <kbd>H</kbd> toggle panel &nbsp; <kbd>B</kbd> benchmark &nbsp; try <i>stride matching</i> off to see foot-slide
+    <kbd>H</kbd> toggle panel &nbsp; <kbd>B</kbd> benchmark &nbsp; <kbd>G</kbd> <b>paint minigun</b> (hold LMB, <kbd>R</kbd> respawns)
   </div>
   <script type="module" src="/src/main.js"></script>
 </body>

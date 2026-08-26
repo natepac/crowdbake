@@ -214,6 +214,14 @@ export class VATAsset {
   }
 
   static async load(url, { fetchImpl = fetch } = {}) {
+    // single-file builds embed bakes as base64 (tools/build-single.mjs); the
+    // registry, when present, replaces the network entirely
+    const inline = globalThis.__CROWDBAKE_INLINE;
+    const name = url.split('/').pop().replace(/\.json$/, '');
+    if (inline && inline[name]) {
+      const bin = await (await fetch('data:application/octet-stream;base64,' + inline[name].bin)).arrayBuffer();
+      return new VATAsset(inline[name].manifest, bin);
+    }
     const manifest = await (await fetchImpl(url)).json();
     const binURL = new URL(manifest.binary, new URL(url, location.href)).href;
     const bin = await (await fetchImpl(binURL)).arrayBuffer();
